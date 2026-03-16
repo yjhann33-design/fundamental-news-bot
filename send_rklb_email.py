@@ -2,7 +2,6 @@ import os
 import json
 import time
 import hashlib
-import urllib.parse
 import feedparser
 import smtplib
 from datetime import datetime
@@ -13,12 +12,12 @@ from newspaper import Article
 from openai import OpenAI
 
 # =========================
-# 1. 사용자 설정
+# 1. 환경변수
 # =========================
-OPENAI_API_KEY = "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"
-EMAIL_ADDRESS = "han0408334@gmail.com"
-EMAIL_APP_PASSWORD = "mjrt txac cdbc csmf"
-TO_EMAIL = "han0408334@gmail.com"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
+EMAIL_APP_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
+TO_EMAIL = os.getenv("TO_EMAIL")
 
 NEWS_LIMIT_PER_SYMBOL = 3
 SENT_FILE = "sent_news.json"
@@ -26,14 +25,8 @@ SENT_FILE = "sent_news.json"
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# 2. 종목 / 키워드 / RSS 설정
+# 2. 종목 / RSS 설정
 # =========================
-# notes:
-# - ticker가 있는 미국 상장사는 Yahoo RSS 사용
-# - Infleqtion은 비상장이라 키워드형 RSS만 사용
-# - 로킷헬스케어는 국내 키워드형 RSS 위주
-# - Bitcoin은 Yahoo + CoinDesk + Google News 혼합
-
 TRACKERS = [
     {
         "name": "Rocket Lab",
@@ -91,9 +84,23 @@ TRACKERS = [
     },
 ]
 
+# =========================
+# 3. 기본 점검
+# =========================
+def validate_env():
+    required = {
+        "OPENAI_API_KEY": OPENAI_API_KEY,
+        "EMAIL_ADDRESS": EMAIL_ADDRESS,
+        "EMAIL_APP_PASSWORD": EMAIL_APP_PASSWORD,
+        "TO_EMAIL": TO_EMAIL,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise ValueError(f"필수 환경변수 누락: {', '.join(missing)}")
+
 
 # =========================
-# 3. 보낸 뉴스 기록
+# 4. 보낸 뉴스 기록
 # =========================
 def load_sent_news():
     if not os.path.exists(SENT_FILE):
@@ -107,13 +114,13 @@ def load_sent_news():
         return set()
 
 
-def save_sent_news(sent_links):
+def save_sent_news(sent_keys):
     with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(list(sent_links), f, ensure_ascii=False, indent=2)
+        json.dump(sorted(list(sent_keys)), f, ensure_ascii=False, indent=2)
 
 
 # =========================
-# 4. 유틸
+# 5. 유틸
 # =========================
 def normalize_text(text):
     return " ".join((text or "").strip().lower().split())
@@ -151,7 +158,7 @@ def title_matches_tracker(title, keywords):
 
 
 # =========================
-# 5. RSS 수집
+# 6. RSS 수집
 # =========================
 def fetch_tracker_news(tracker, sent_keys, limit=3):
     collected = []
@@ -167,7 +174,6 @@ def fetch_tracker_news(tracker, sent_keys, limit=3):
             if not title and not link:
                 continue
 
-            # Google News / CoinDesk 같은 범용 소스는 키워드 매칭 한번 더
             if "google.com/rss/search" in rss_url or "coindesk.com" in rss_url:
                 if not title_matches_tracker(title, tracker["query_keywords"]):
                     continue
@@ -192,7 +198,7 @@ def fetch_tracker_news(tracker, sent_keys, limit=3):
 
 
 # =========================
-# 6. 기사 본문 가져오기
+# 7. 기사 본문 추출
 # =========================
 def get_article_text(url):
     try:
@@ -210,17 +216,17 @@ def get_article_text(url):
 
 
 # =========================
-# 7. AI 분석
+# 8. AI 분석
 # =========================
 def summarize_news(company_name, original_title, link, text):
     prompt = f"""
 다음 뉴스 기사를 한국어로 분석해줘.
 
-대상 기업/자산:
+대상:
 {company_name}
 
 목적은 매수/매도 판단이 아니라,
-이 기업(또는 자산)의 펀더멘털/핵심 논리가 유지되는지, 강화되는지, 흔들리는지 추적하는 것이다.
+이 기업 또는 자산의 펀더멘털/핵심 논리가 유지되는지, 강화되는지, 흔들리는지 추적하는 것이다.
 
 반드시 JSON 형식만 출력해.
 설명 문장, 코드블록, 추가 코멘트는 절대 넣지 마.
@@ -246,9 +252,9 @@ def summarize_news(company_name, original_title, link, text):
 작성 원칙:
 - 과장하지 말 것
 - 모르면 단정하지 말 것
-- 주가 전망, 매수/매도, 점수화 금지
+- 매수/매도/점수화 금지
 - 기사에 근거해 사업, 제품, 고객, 경쟁력, 실행력, 수요, 규제, 수주, 채택, 재무적 함의를 요약
-- 비트코인의 경우 기업 대신 네트워크/제도/수요/매크로 관점으로 요약
+- 비트코인은 기업 대신 네트워크/제도/수요/매크로 관점으로 요약
 - 결론은 짧고 분명하게 작성
 
 기사 제목:
@@ -288,7 +294,7 @@ def summarize_news(company_name, original_title, link, text):
 
 
 # =========================
-# 8. 본문 조립 보조
+# 9. 본문 조립
 # =========================
 def append_section(body, section_title, items):
     body.append(section_title)
@@ -300,9 +306,6 @@ def append_section(body, section_title, items):
     body.append("")
 
 
-# =========================
-# 9. 이메일 본문 생성
-# =========================
 def build_email_body(all_tracker_news):
     body = []
     body.append("📩 펀더멘털 트래킹 리포트")
@@ -373,9 +376,11 @@ def send_email(subject, body):
 
 
 # =========================
-# 11. 메인 실행
+# 11. 메인
 # =========================
 def main():
+    validate_env()
+
     sent_keys = load_sent_news()
     all_tracker_news = {}
     new_sent_keys = set(sent_keys)
