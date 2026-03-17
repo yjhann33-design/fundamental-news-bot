@@ -38,23 +38,6 @@ TRACKERS = [
         ],
     },
     {
-        "name": "IonQ",
-        "display_name": "IONQ",
-        "query_keywords": ["IonQ", "IONQ"],
-        "rss_urls": [
-            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=IONQ&region=US&lang=en-US",
-            "https://news.google.com/rss/search?q=IonQ%20OR%20IONQ&hl=en-US&gl=US&ceid=US:en",
-        ],
-    },
-    {
-        "name": "Infleqtion",
-        "display_name": "INFQ",
-        "query_keywords": ["Infleqtion", "ColdQuanta", "quantum"],
-        "rss_urls": [
-            "https://news.google.com/rss/search?q=Infleqtion%20OR%20ColdQuanta&hl=en-US&gl=US&ceid=US:en",
-        ],
-    },
-    {
         "name": "Hims & Hers",
         "display_name": "HIMS",
         "query_keywords": ["Hims & Hers", "HIMS"],
@@ -226,7 +209,7 @@ def summarize_news(company_name, original_title, link, text):
 {company_name}
 
 목적은 매수/매도 판단이 아니라,
-이 기업 또는 자산의 펀더멘털/핵심 논리가 유지되는지, 강화되는지, 흔들리는지 추적하는 것이다.
+이 기업 또는 자산의 핵심 흐름이 유지되는지 추적하는 것이다.
 
 반드시 JSON 형식만 출력해.
 설명 문장, 코드블록, 추가 코멘트는 절대 넣지 마.
@@ -234,19 +217,12 @@ def summarize_news(company_name, original_title, link, text):
 형식:
 {{
   "korean_title": "한국어 기사 제목",
+  "headline_takeaway": "이 기사가 왜 중요한지 한 줄로 요약",
   "summary": [
     "핵심 내용 요약 1",
     "핵심 내용 요약 2"
   ],
-  "fundamental_impact": [
-    "이 뉴스가 펀더멘털에 주는 의미 1",
-    "이 뉴스가 펀더멘털에 주는 의미 2"
-  ],
-  "watch_points": [
-    "앞으로 체크해야 할 변화 1",
-    "앞으로 체크해야 할 변화 2"
-  ],
-  "conclusion": "펀더멘털 관점 한줄 결론"
+  "conclusion": "핵심 흐름 관점 한줄 결론"
 }}
 
 작성 원칙:
@@ -255,7 +231,8 @@ def summarize_news(company_name, original_title, link, text):
 - 매수/매도/점수화 금지
 - 기사에 근거해 사업, 제품, 고객, 경쟁력, 실행력, 수요, 규제, 수주, 채택, 재무적 함의를 요약
 - 비트코인은 기업 대신 네트워크/제도/수요/매크로 관점으로 요약
-- 결론은 짧고 분명하게 작성
+- headline_takeaway는 짧고 바로 이해되게 작성
+- conclusion은 짧고 분명하게 작성
 
 기사 제목:
 {original_title}
@@ -278,17 +255,15 @@ def summarize_news(company_name, original_title, link, text):
         data = json.loads(raw)
         return {
             "korean_title": data.get("korean_title", original_title),
+            "headline_takeaway": data.get("headline_takeaway", "핵심 의미 요약 없음"),
             "summary": data.get("summary", []),
-            "fundamental_impact": data.get("fundamental_impact", []),
-            "watch_points": data.get("watch_points", []),
             "conclusion": data.get("conclusion", "결론 없음"),
         }
     except Exception:
         return {
             "korean_title": original_title,
+            "headline_takeaway": "AI 분석 결과를 읽는 데 실패했습니다.",
             "summary": ["AI 분석 결과를 읽는 데 실패했습니다."],
-            "fundamental_impact": [],
-            "watch_points": [],
             "conclusion": "AI 분석 파싱 실패",
         }
 
@@ -308,10 +283,10 @@ def append_section(body, section_title, items):
 
 def build_email_body(all_tracker_news):
     body = []
-    body.append("📩 펀더멘털 트래킹 리포트")
+    body.append("📩 핵심 흐름 트래킹 리포트")
     body.append("=" * 80)
     body.append("")
-    body.append("포함 종목/자산: RKLB, IONQ, INFQ(Infleqtion), HIMS, 로킷헬스케어, 비트코인")
+    body.append("포함 종목/자산: RKLB, HIMS, 로킷헬스케어, 비트코인")
     body.append(f"종목별 최대 기사 수: {NEWS_LIMIT_PER_SYMBOL}")
     body.append("")
 
@@ -334,9 +309,8 @@ def build_email_body(all_tracker_news):
             ai_result = summarize_news(tracker_name, title, link, article_text)
 
             korean_title = ai_result.get("korean_title", title)
+            headline_takeaway = ai_result.get("headline_takeaway", "핵심 의미 요약 없음")
             summary = ai_result.get("summary", [])
-            fundamental_impact = ai_result.get("fundamental_impact", [])
-            watch_points = ai_result.get("watch_points", [])
             conclusion = ai_result.get("conclusion", "결론 없음")
 
             body.append(f"{idx}. {korean_title}")
@@ -344,9 +318,11 @@ def build_email_body(all_tracker_news):
             body.append(f"원문 링크: {link}")
             body.append("")
 
+            body.append("핵심 한줄")
+            body.append(f"- {headline_takeaway}")
+            body.append("")
+
             append_section(body, "핵심 내용 요약", summary)
-            append_section(body, "펀더멘털 영향", fundamental_impact)
-            append_section(body, "체크할 변화", watch_points)
 
             body.append("한줄 결론")
             body.append(f"- {conclusion}")
@@ -412,7 +388,7 @@ def main():
     email_body = build_email_body(all_tracker_news)
 
     today = datetime.now().strftime("%Y-%m-%d")
-    subject = f"📩 펀더멘털 트래킹 리포트 ({today})"
+    subject = f"📩 핵심 흐름 트래킹 리포트 ({today})"
 
     send_email(subject, email_body)
     save_sent_news(new_sent_keys)
