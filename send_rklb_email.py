@@ -12,7 +12,7 @@ from newspaper import Article
 from openai import OpenAI
 
 # =========================
-# 1. 환경변수
+# 환경 변수
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
@@ -25,14 +25,14 @@ SENT_FILE = "sent_news.json"
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# 2. 종목 / RSS 설정
+# 종목 설정
 # =========================
 TRACKERS = [
     {
         "name": "Rocket Lab",
         "display_name": "RKLB",
-        "query_keywords": ["Rocket Lab", "RKLB", "Neutron"],
-        "rss_urls": [
+        "keywords": ["Rocket Lab", "RKLB"],
+        "rss": [
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s=RKLB&region=US&lang=en-US",
             "https://news.google.com/rss/search?q=Rocket%20Lab%20OR%20RKLB&hl=en-US&gl=US&ceid=US:en",
         ],
@@ -40,360 +40,223 @@ TRACKERS = [
     {
         "name": "Hims & Hers",
         "display_name": "HIMS",
-        "query_keywords": ["Hims & Hers", "HIMS"],
-        "rss_urls": [
+        "keywords": ["Hims", "HIMS"],
+        "rss": [
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s=HIMS&region=US&lang=en-US",
-            "https://news.google.com/rss/search?q=Hims%20%26%20Hers%20OR%20HIMS&hl=en-US&gl=US&ceid=US:en",
         ],
     },
     {
         "name": "로킷헬스케어",
         "display_name": "로킷헬스케어",
-        "query_keywords": ["로킷헬스케어", "Rokit Healthcare", "ROKIT Healthcare"],
-        "rss_urls": [
-            "https://news.google.com/rss/search?q=%EB%A1%9C%ED%82%B7%ED%97%AC%EC%8A%A4%EC%BC%80%EC%96%B4%20OR%20%22Rokit%20Healthcare%22&hl=ko&gl=KR&ceid=KR:ko",
-            "https://news.google.com/rss/search?q=%22ROKIT%20Healthcare%22&hl=en-US&gl=US&ceid=US:en",
+        "keywords": ["로킷헬스케어", "ROKIT"],
+        "rss": [
+            "https://news.google.com/rss/search?q=로킷헬스케어&hl=ko&gl=KR&ceid=KR:ko",
         ],
     },
     {
         "name": "Bitcoin",
         "display_name": "비트코인",
-        "query_keywords": ["Bitcoin", "BTC", "crypto"],
-        "rss_urls": [
+        "keywords": ["Bitcoin", "BTC"],
+        "rss": [
             "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BTC-USD&region=US&lang=en-US",
             "https://www.coindesk.com/arc/outboundfeeds/rss/",
-            "https://news.google.com/rss/search?q=Bitcoin%20OR%20BTC&hl=en-US&gl=US&ceid=US:en",
         ],
     },
 ]
 
 # =========================
-# 3. 기본 점검
+# 유틸
 # =========================
-def validate_env():
-    required = {
-        "OPENAI_API_KEY": OPENAI_API_KEY,
-        "EMAIL_ADDRESS": EMAIL_ADDRESS,
-        "EMAIL_APP_PASSWORD": EMAIL_APP_PASSWORD,
-        "TO_EMAIL": TO_EMAIL,
-    }
-    missing = [k for k, v in required.items() if not v]
-    if missing:
-        raise ValueError(f"필수 환경변수 누락: {', '.join(missing)}")
-
-
-# =========================
-# 4. 보낸 뉴스 기록
-# =========================
-def load_sent_news():
+def load_sent():
     if not os.path.exists(SENT_FILE):
         return set()
-
-    try:
-        with open(SENT_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return set(data)
-    except Exception:
-        return set()
+    with open(SENT_FILE, "r") as f:
+        return set(json.load(f))
 
 
-def save_sent_news(sent_keys):
-    with open(SENT_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(list(sent_keys)), f, ensure_ascii=False, indent=2)
+def save_sent(data):
+    with open(SENT_FILE, "w") as f:
+        json.dump(list(data), f)
 
 
-# =========================
-# 5. 유틸
-# =========================
-def normalize_text(text):
-    return " ".join((text or "").strip().lower().split())
+def make_key(link, title):
+    base = link or title
+    return hashlib.sha256(base.encode()).hexdigest()
 
 
-def make_entry_key(link, title):
-    base = (link or "").strip()
-    if not base:
-        base = normalize_text(title)
-    return hashlib.sha256(base.encode("utf-8")).hexdigest()
-
-
-def format_publish_date(entry):
-    try:
-        if hasattr(entry, "published_parsed") and entry.published_parsed:
-            dt = datetime(*entry.published_parsed[:6])
-            return f"{dt.year}년 {dt.month}월 {dt.day}일"
-        return "날짜 정보 없음"
-    except Exception:
-        return "날짜 정보 없음"
-
-
-def clean_json_text(raw_text):
-    cleaned = raw_text.strip()
-    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
-    return cleaned
-
-
-def title_matches_tracker(title, keywords):
-    t = normalize_text(title)
-    for kw in keywords:
-        if normalize_text(kw) in t:
-            return True
-    return False
+def format_date(entry):
+    if hasattr(entry, "published_parsed") and entry.published_parsed:
+        dt = datetime(*entry.published_parsed[:6])
+        return f"{dt.year}년 {dt.month}월 {dt.day}일"
+    return "날짜 없음"
 
 
 # =========================
-# 6. RSS 수집
+# 뉴스 수집
 # =========================
-def fetch_tracker_news(tracker, sent_keys, limit=3):
-    collected = []
-    current_seen_keys = set()
+def fetch_news(tracker, sent):
+    result = []
+    seen = set()
 
-    for rss_url in tracker["rss_urls"]:
-        feed = feedparser.parse(rss_url)
+    for url in tracker["rss"]:
+        feed = feedparser.parse(url)
 
-        for entry in feed.entries:
-            title = getattr(entry, "title", "").strip()
-            link = getattr(entry, "link", "").strip()
+        for e in feed.entries:
+            title = getattr(e, "title", "")
+            link = getattr(e, "link", "")
 
-            if not title and not link:
+            key = make_key(link, title)
+
+            if key in sent or key in seen:
                 continue
 
-            if "google.com/rss/search" in rss_url or "coindesk.com" in rss_url:
-                if not title_matches_tracker(title, tracker["query_keywords"]):
-                    continue
+            seen.add(key)
+            result.append(e)
 
-            entry_key = make_entry_key(link, title)
+            if len(result) >= NEWS_LIMIT_PER_SYMBOL:
+                return result
 
-            if entry_key in sent_keys:
-                continue
-
-            if entry_key in current_seen_keys:
-                continue
-
-            current_seen_keys.add(entry_key)
-            collected.append(entry)
-
-            if len(collected) >= limit:
-                return collected
-
-        time.sleep(0.3)
-
-    return collected[:limit]
+    return result
 
 
 # =========================
-# 7. 기사 본문 추출
+# 본문 가져오기
 # =========================
-def get_article_text(url):
+def get_text(url):
     try:
-        article = Article(url)
-        article.download()
-        article.parse()
-        text = article.text.strip()
-
-        if not text:
-            return "본문 추출 실패: 기사 본문이 비어 있습니다."
-
-        return text[:5000]
-    except Exception as e:
-        return f"본문 추출 실패: {e}"
+        a = Article(url)
+        a.download()
+        a.parse()
+        return a.text[:3000]
+    except:
+        return ""
 
 
 # =========================
-# 8. AI 분석
+# AI 분석 (결론만)
 # =========================
-def summarize_news(company_name, original_title, link, text):
+def analyze(title, text, company):
+
     prompt = f"""
-다음 뉴스 기사를 한국어로 분석해줘.
+다음 뉴스 기사를 한국어로 분석해.
 
-대상:
-{company_name}
+목표: 이 기업의 핵심 흐름이 유지되는지 한줄로 판단
 
-목적은 매수/매도 판단이 아니라,
-이 기업 또는 자산의 핵심 흐름이 유지되는지 추적하는 것이다.
+JSON만 출력:
 
-반드시 JSON 형식만 출력해.
-설명 문장, 코드블록, 추가 코멘트는 절대 넣지 마.
-
-형식:
 {{
-  "korean_title": "한국어 기사 제목",
-  "headline_takeaway": "이 기사가 왜 중요한지 한 줄로 요약",
-  "summary": [
-    "핵심 내용 요약 1",
-    "핵심 내용 요약 2"
-  ],
-  "conclusion": "핵심 흐름 관점 한줄 결론"
+ "korean_title": "...",
+ "conclusion": "..."
 }}
 
-작성 원칙:
-- 과장하지 말 것
-- 모르면 단정하지 말 것
-- 매수/매도/점수화 금지
-- 기사에 근거해 사업, 제품, 고객, 경쟁력, 실행력, 수요, 규제, 수주, 채택, 재무적 함의를 요약
-- 비트코인은 기업 대신 네트워크/제도/수요/매크로 관점으로 요약
-- headline_takeaway는 짧고 바로 이해되게 작성
-- conclusion은 짧고 분명하게 작성
-
 기사 제목:
-{original_title}
+{title}
 
-기사 링크:
-{link}
-
-기사 본문:
+본문:
 {text}
 """
 
-    response = client.responses.create(
+    res = client.responses.create(
         model="gpt-4.1-mini",
         input=prompt
     )
 
-    raw = clean_json_text(response.output_text)
+    raw = res.output_text.strip().replace("```", "")
 
     try:
         data = json.loads(raw)
+        return data
+    except:
         return {
-            "korean_title": data.get("korean_title", original_title),
-            "headline_takeaway": data.get("headline_takeaway", "핵심 의미 요약 없음"),
-            "summary": data.get("summary", []),
-            "conclusion": data.get("conclusion", "결론 없음"),
-        }
-    except Exception:
-        return {
-            "korean_title": original_title,
-            "headline_takeaway": "AI 분석 결과를 읽는 데 실패했습니다.",
-            "summary": ["AI 분석 결과를 읽는 데 실패했습니다."],
-            "conclusion": "AI 분석 파싱 실패",
+            "korean_title": title,
+            "conclusion": "분석 실패"
         }
 
 
 # =========================
-# 9. 본문 조립
+# 이메일 생성
 # =========================
-def append_section(body, section_title, items):
-    body.append(section_title)
-    if items:
-        for item in items:
-            body.append(f"- {item}")
-    else:
-        body.append("- 내용 없음")
-    body.append("")
+def build_body(all_news):
 
-
-def build_email_body(all_tracker_news):
     body = []
-    body.append("📩 핵심 흐름 트래킹 리포트")
-    body.append("=" * 80)
-    body.append("")
-    body.append("포함 종목/자산: RKLB, HIMS, 로킷헬스케어, 비트코인")
-    body.append(f"종목별 최대 기사 수: {NEWS_LIMIT_PER_SYMBOL}")
-    body.append("")
+    body.append("📩 핵심 흐름 리포트\n")
+    body.append("="*60 + "\n")
 
-    for tracker_name, entries in all_tracker_news.items():
-        if not entries:
-            continue
+    for name, items in all_news.items():
 
-        body.append(f"■ {tracker_name}")
-        body.append("-" * 80)
-        body.append("")
+        body.append(f"\n■ {name}\n")
 
-        for idx, item in enumerate(entries, start=1):
-            title = getattr(item, "title", "").strip()
-            link = getattr(item, "link", "").strip()
-            publish_date = format_publish_date(item)
+        for i, item in enumerate(items, 1):
 
-            print(f"[{tracker_name}] {idx}/{len(entries)} 기사 처리 중")
+            title = item.title
+            link = item.link
+            date = format_date(item)
 
-            article_text = get_article_text(link)
-            ai_result = summarize_news(tracker_name, title, link, article_text)
+            text = get_text(link)
+            result = analyze(title, text, name)
 
-            korean_title = ai_result.get("korean_title", title)
-            headline_takeaway = ai_result.get("headline_takeaway", "핵심 의미 요약 없음")
-            summary = ai_result.get("summary", [])
-            conclusion = ai_result.get("conclusion", "결론 없음")
+            body.append(f"{i}. {result['korean_title']}")
+            body.append(f"날짜: {date}")
+            body.append(f"링크: {link}\n")
 
-            body.append(f"{idx}. {korean_title}")
-            body.append(f"기사 날짜: {publish_date}")
-            body.append(f"원문 링크: {link}")
-            body.append("")
+            body.append("결론")
+            body.append(f"- {result['conclusion']}\n")
 
-            body.append("핵심 한줄")
-            body.append(f"- {headline_takeaway}")
-            body.append("")
-
-            append_section(body, "핵심 내용 요약", summary)
-
-            body.append("한줄 결론")
-            body.append(f"- {conclusion}")
-            body.append("")
-            body.append("." * 80)
-            body.append("")
-
-        body.append("")
+            body.append("."*60 + "\n")
 
     return "\n".join(body)
 
 
 # =========================
-# 10. 이메일 발송
+# 이메일 발송
 # =========================
-def send_email(subject, body):
+def send(subject, body):
+
     msg = MIMEMultipart()
     msg["From"] = EMAIL_ADDRESS
     msg["To"] = TO_EMAIL
     msg["Subject"] = subject
+
     msg.attach(MIMEText(body, "plain", "utf-8"))
 
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
-        server.send_message(msg)
+    with smtplib.SMTP("smtp.gmail.com", 587) as s:
+        s.starttls()
+        s.login(EMAIL_ADDRESS, EMAIL_APP_PASSWORD)
+        s.send_message(msg)
 
 
 # =========================
-# 11. 메인
+# 메인
 # =========================
 def main():
-    validate_env()
 
-    sent_keys = load_sent_news()
-    all_tracker_news = {}
-    new_sent_keys = set(sent_keys)
+    sent = load_sent()
+    new_sent = set(sent)
 
-    total_new_count = 0
+    all_news = {}
 
-    for tracker in TRACKERS:
-        entries = fetch_tracker_news(
-            tracker=tracker,
-            sent_keys=sent_keys,
-            limit=NEWS_LIMIT_PER_SYMBOL
-        )
+    for t in TRACKERS:
 
-        if entries:
-            all_tracker_news[tracker["display_name"]] = entries
-            total_new_count += len(entries)
+        items = fetch_news(t, sent)
 
-            for entry in entries:
-                key = make_entry_key(
-                    getattr(entry, "link", "").strip(),
-                    getattr(entry, "title", "").strip()
-                )
-                new_sent_keys.add(key)
+        if items:
+            all_news[t["display_name"]] = items
 
-    if total_new_count == 0:
-        print("새로운 뉴스 없음")
+            for i in items:
+                new_sent.add(make_key(i.link, i.title))
+
+    if not all_news:
+        print("새 뉴스 없음")
         return
 
-    email_body = build_email_body(all_tracker_news)
+    body = build_body(all_news)
 
     today = datetime.now().strftime("%Y-%m-%d")
-    subject = f"📩 핵심 흐름 트래킹 리포트 ({today})"
+    send(f"📩 핵심 흐름 리포트 {today}", body)
 
-    send_email(subject, email_body)
-    save_sent_news(new_sent_keys)
+    save_sent(new_sent)
 
-    print("이메일 발송 완료")
+    print("메일 전송 완료")
 
 
 if __name__ == "__main__":
